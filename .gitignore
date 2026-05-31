@@ -1,0 +1,27 @@
+# Feature embeddings
+*.npy
+train_pic_npy/
+test_pic_npy/
+train_text_npy/
+test_text_npy/
+
+# Model weights
+*.pkl
+*.pt
+*.pth
+models/
+
+# Images
+pics/
+static/
+
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
