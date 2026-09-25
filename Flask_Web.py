@@ -1,4 +1,6 @@
 # Flask-based image search engine web interface
+import argparse
+
 from flask import Flask, request, send_from_directory
 from markupsafe import escape
 
@@ -67,4 +69,8 @@ def SearchEngine():
 
 
 if __name__ == '__main__':
-    app.run(debug=False)  # http://localhost:5000/
+    parser = argparse.ArgumentParser(description="Run the image search web interface")
+    # not 5000: on macOS that port is taken by the AirPlay Receiver
+    parser.add_argument("--port", type=int, default=5001)
+    args = parser.parse_args()
+    app.run(port=args.port, debug=False)  # http://localhost:5001/

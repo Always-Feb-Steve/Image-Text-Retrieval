@@ -69,7 +69,7 @@ Flickr8k images + captions            GloVe 6B (200-dim)
                         │
                      rank.py   → models/net.pt (+ net_results.json with Recall@K)
                         │
-          search.py / Flask_Web.py → http://localhost:5000/
+          search.py / Flask_Web.py → http://localhost:5001/
 ```
 
 ## Quickstart
@@ -92,11 +92,13 @@ python search.py "a dog running on the beach" "kids in winter" --top_k 5
 python search.py "kids in winter" --mode keyword
 ```
 
-Or run the web interface and open http://localhost:5000/:
+Or run the web interface and open http://localhost:5001/:
 
 ```bash
-python Flask_Web.py
+python Flask_Web.py              # add --port to use another port
 ```
+
+Port 5001 is the default because macOS reserves port 5000 for the AirPlay Receiver (it answers with 403 Forbidden).
 
 The page ranks all 8,000 images with the model; the *keyword* option shows the inverted-index baseline (images whose captions contain every query word).
 
