@@ -1,167 +1,83 @@
 # Extract image features using ResNet50
-import torch
 import json
-import torch.nn as nn
-from torch.autograd import Variable
-from torchvision import models, transforms
+import os
+import time
+
 import numpy as np
 import PIL.Image as Image
-from multiprocessing import Pool
-import time
-import os
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+from torchvision import models, transforms
+
+# ── Paths (update these to match your environment) ──────────────────────────
+meta_folder     = "./meta_data/"
+pic_folder      = "./data/Flicker8k_Dataset/"
+feature_folder  = "./features/"
+# ─────────────────────────────────────────────────────────────────────────────
+
+os.makedirs(feature_folder, exist_ok=True)
 
 
-begintime = time.perf_counter()
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
-resnet50 = models.resnet50(pretrained=True)  # Initialize ResNet50 for extracting embeddings (50 layers)
+
+# ResNet50 pre-trained on ImageNet. Replacing the final classification layer with an
+# identity makes the network return the 2048-dim output of the "avgpool" layer directly.
+resnet50 = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
+resnet50.fc = nn.Identity()
 resnet50.eval()
-
-extract_list = ["avgpool"]
-
-
-class FeatureExtractor(nn.Module):
-    """Extracts intermediate layer features from a given submodule."""
-
-    def __init__(self, submodule, extracted_layers):
-        super(FeatureExtractor, self).__init__()
-        self.submodule = submodule          # ResNet50 model
-        self.extracted_layers = extracted_layers  # e.g. ['avgpool'] — returns embedding after this layer
-
-    def forward(self, x):
-        outputs = []
-        for name, module in self.submodule._modules.items():
-            x = module(x)
-            if name in self.extracted_layers:
-                outputs.append(x)
-        return outputs
-
 
 transform = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
-    transforms.ToTensor()
+    transforms.ToTensor(),
+    # ResNet50 was trained on ImageNet-normalized inputs
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-# ── Paths (update these to match your environment) ──────────────────────────
-train_json_path = "./meta_data/train_data.json"
-test_json_path  = "./meta_data/test_data.json"
-pic_folder               = "./pics/"
-save_pic_feature_folder  = "./train_pic_npy/"
-test_save_pic_feature_folder = "./test_pic_npy/"
-save_id_npy_folder       = "./inverted_index/"
-# ─────────────────────────────────────────────────────────────────────────────
 
-for folder in [save_pic_feature_folder, test_save_pic_feature_folder, save_id_npy_folder]:
-    os.makedirs(folder, exist_ok=True)
+class PicDataset(Dataset):
+    def __init__(self, pic_ids):
+        self.pic_ids = pic_ids
 
+    def __len__(self):
+        return len(self.pic_ids)
 
-def extract_picid_feature(one_item):
-    """Extract and save ResNet50 feature for a single training image."""
-    pic_id   = str(one_item["pic_id"])
-    img_path = os.path.join(pic_folder, pic_id + ".jpg")
-    pure_id  = pic_id.split('.')[0]
-    save_path = os.path.join(save_pic_feature_folder, pure_id + ".npy")
-
-    if os.path.exists(save_path):
-        print("Already processed:", pic_id)
-        return pic_id
-
-    try:
-        img = transform(Image.open(img_path))
-    except Exception:
-        print("Error reading image:", pic_id)
-        return None
-
-    x = Variable(torch.unsqueeze(img, dim=0).float(), requires_grad=False)
-    extractor = FeatureExtractor(resnet50, extract_list)
-
-    try:
-        savebuffer = extractor(x)[0].detach().numpy()
-    except Exception:
-        print("Error extracting features for image:", pic_id)
-        return None
-
-    np.save(save_path, savebuffer)
-    return pic_id
+    def __getitem__(self, index):
+        img = Image.open(os.path.join(pic_folder, self.pic_ids[index] + ".jpg")).convert("RGB")
+        return transform(img)
 
 
-def extract_picid_feature_test(one_item):
-    """Extract and save ResNet50 feature for a single test image."""
-    pic_id   = str(one_item["pic_id"])
-    img_path = os.path.join(pic_folder, pic_id + ".jpg")
-    pure_id  = pic_id.split('.')[0]
-    save_path = os.path.join(test_save_pic_feature_folder, pure_id + ".npy")
+def process(split, device):
+    """Extract ResNet50 features for every image in one split and save them as one matrix."""
+    with open(os.path.join(meta_folder, f"{split}_data.json"), encoding="utf8") as fp:
+        pic_ids = [json.loads(line)["pic_id"] for line in fp if line.strip()]
+    print("#{} images: {}".format(split, len(pic_ids)))
 
-    if os.path.exists(save_path):
-        return pic_id
+    loader = DataLoader(PicDataset(pic_ids), batch_size=64, num_workers=4)
+    features = []
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        for batch in loader:
+            features.append(resnet50(batch.to(device)).cpu().numpy())
+    features = np.concatenate(features).astype(np.float32)  # (N, 2048)
+    print("  extracted {} in {:.1f}s".format(features.shape, time.perf_counter() - t0))
 
-    try:
-        img = transform(Image.open(img_path))
-    except Exception:
-        print("Error reading image:", pic_id)
-        return None
-
-    x = Variable(torch.unsqueeze(img, dim=0).float(), requires_grad=False)
-    extractor = FeatureExtractor(resnet50, extract_list)
-
-    try:
-        savebuffer = extractor(x)[0].detach().numpy()
-    except Exception:
-        print("Error extracting features for image:", pic_id)
-        return None
-
-    np.save(save_path, savebuffer)
-    return pic_id
-
-
-def process_train():
-    """Process all training images and save their feature embeddings."""
-    with open(train_json_path, "rb") as fp:
-        buffer = fp.read()
-
-    dictlist = []
-    for item in str(buffer, encoding="UTF-8").split("\n"):
-        try:
-            dictlist.append(json.loads(item))
-        except Exception:
-            continue
-    print("#Train samples:", len(dictlist))
-
-    pool = Pool(processes=10)
-    res  = pool.map(extract_picid_feature, dictlist)
-    pool.close()
-    pool.join()
-
-    new_dict = [r for r in res if r is not None]
-
-    with open(os.path.join(save_id_npy_folder, "train_img_npy_id.json"), "w", encoding="UTF-8") as fp:
-        json.dump(new_dict, fp, ensure_ascii=False)
-
-
-def process_test():
-    """Process all test images and save their feature embeddings."""
-    with open(test_json_path, "rb") as fp:
-        buffer = fp.read()
-
-    dictlist = []
-    for item in str(buffer, encoding="UTF-8").split("\n"):
-        try:
-            dictlist.append(json.loads(item))
-        except Exception:
-            continue
-    print("#Test samples:", len(dictlist))
-
-    pool = Pool(processes=10)
-    res  = pool.map(extract_picid_feature_test, dictlist)
-    pool.close()
-    pool.join()
-
-    new_dict = [r for r in res if r is not None]
-
-    with open(os.path.join(save_id_npy_folder, "test_img_npy_id.json"), "w", encoding="UTF-8") as fp:
-        json.dump(new_dict, fp, ensure_ascii=False)
+    # Row i of img_<split>.npy belongs to pic_ids[i]
+    np.save(os.path.join(feature_folder, f"img_{split}.npy"), features)
+    with open(os.path.join(feature_folder, f"img_{split}_ids.json"), "w", encoding="utf8") as fp:
+        json.dump(pic_ids, fp)
 
 
 if __name__ == "__main__":
-    process_train()
-    process_test()
+    device = get_device()
+    print("Using device:", device)
+    resnet50.to(device)
+    for split in ["train", "val", "test"]:
+        process(split, device)

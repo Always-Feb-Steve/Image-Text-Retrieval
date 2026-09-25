@@ -1,66 +1,70 @@
 # Flask-based image search engine web interface
-from flask import Flask, redirect, url_for, request
-import json
-import shutil
-import os
+from flask import Flask, request, send_from_directory
+from markupsafe import escape
+
+from search import Searcher, pic_folder
 
 app = Flask(__name__)
+searcher = Searcher()  # loads the model and embeds all images once
 
-# ── Paths (update these to match your environment) ──────────────────────────
-input_filename = "./meta_data/output.json"
-pic_folder     = "./pics/"
-static_folder  = "./static/"
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Load the inverted index
-with open(input_filename, "rb") as fp:
-    buffer = fp.read()
-dict_key_2_pic = json.loads(str(buffer, encoding="UTF-8"))
-for key in dict_key_2_pic:
-    dict_key_2_pic[key] = [str(v) for v in dict_key_2_pic[key]]
-
-os.makedirs(static_folder, exist_ok=True)
-
-
-@app.route('/success/<tag>.html')
-def success(tag):
-    """Display images matching the searched tag."""
-    html = "<p align=center>Search Results<br /><br />"
-    pic_list = []
-
-    for pic in dict_key_2_pic[tag]:
-        pic = str(pic)
-        if pic.startswith('['):
-            pic = pic.split('\'')[1]
-
-        src = os.path.join(pic_folder, pic + ".jpg")
-        dst = os.path.join(static_folder, pic + ".jpg")
-
-        if os.path.exists(src):
-            shutil.copyfile(src, dst)
-            print("Serving:", pic)
-            html += '<img src="/static/{}.jpg" alt="{}" />'.format(pic, tag)
-            pic_list.append(pic)
-
-    print("Results:", pic_list)
-    return html
+PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Image-Text Retrieval</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; max-width: 1100px; margin: 24px auto; padding: 0 16px; }}
+  form {{ display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }}
+  input[type=text] {{ flex: 1; min-width: 200px; padding: 8px; font-size: 16px; }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }}
+  .grid figure {{ margin: 0; }}
+  .grid img {{ width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; }}
+  figcaption {{ font-size: 12px; color: #666; }}
+</style></head>
+<body>
+<h2>Image-Text Retrieval</h2>
+<form action="/SearchEngine/" method="get">
+  <input type="text" name="tag" value="{query}" placeholder="e.g. a dog running on the beach">
+  <label><input type="radio" name="mode" value="semantic" {semantic_checked}> model</label>
+  <label><input type="radio" name="mode" value="keyword" {keyword_checked}> keyword</label>
+  <button type="submit">Search</button>
+</form>
+{body}
+</body></html>"""
 
 
-@app.route('/fail/<tag1>/')
-def fail(tag1):
-    """Return a message when no results are found."""
-    return 'Sorry, no results found for keyword: {}'.format(tag1)
+def render(query="", mode="semantic", body=""):
+    return PAGE.format(query=escape(query), body=body,
+                       semantic_checked="checked" if mode != "keyword" else "",
+                       keyword_checked="checked" if mode == "keyword" else "")
+
+
+@app.route('/')
+def index():
+    return render()
+
+
+@app.route('/images/<pic_id>.jpg')
+def image(pic_id):
+    """Serve a Flickr8k image straight from the dataset folder."""
+    return send_from_directory(pic_folder, pic_id + ".jpg")
 
 
 @app.route('/SearchEngine/', methods=['GET'])
 def SearchEngine():
-    """Main search endpoint — accepts a tag via GET parameter."""
-    content = request.args.get('tag')
-    if content in dict_key_2_pic:
-        return redirect(url_for('success', tag=content))
-    else:
-        return redirect(url_for('fail', tag1=content))
+    """Main search endpoint — accepts a free-text query via the `tag` GET parameter."""
+    query = request.args.get('tag', '').strip()
+    mode = request.args.get('mode', 'semantic')
+    if not query:
+        return render(mode=mode)
+
+    results = searcher.keyword(query, 24) if mode == "keyword" else searcher.semantic(query, 24)
+    if not results:
+        return render(query, mode, "<p>Sorry, no results found for: {}</p>".format(escape(query)))
+
+    cells = "".join(
+        '<figure><img src="/images/{0}.jpg" alt="{1}"><figcaption>{2}</figcaption></figure>'.format(
+            escape(pic_id), escape(query), "similarity {:.3f}".format(score) if score is not None else "")
+        for pic_id, score in results)
+    return render(query, mode, '<div class="grid">{}</div>'.format(cells))
 
 
 if __name__ == '__main__':
-    app.run(debug=False)  # Listens continuously for incoming requests
+    app.run(debug=False)  # http://localhost:5000/

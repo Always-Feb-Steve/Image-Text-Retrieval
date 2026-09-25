@@ -1,19 +1,16 @@
-# Feature embeddings
+# Downloaded data (python download_data.py)
+/data
+
+# Generated metadata and features
+meta_data/*.json
+features/
 *.npy
-train_pic_npy/
-test_pic_npy/
-train_text_npy/
-test_text_npy/
 
 # Model weights
+models/
 *.pkl
 *.pt
 *.pth
-models/
-
-# Images
-pics/
-static/
 
 # Python
 __pycache__/

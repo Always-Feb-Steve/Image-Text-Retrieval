@@ -1,111 +1,72 @@
-# Extract text features from captions using Word2Vec embeddings
-import numpy as np
+# Extract text features from captions using GloVe word embeddings (mean of word vectors)
 import json
-import time
 import os
+import re
+import time
+
+import numpy as np
 
 # ── Paths (update these to match your environment) ──────────────────────────
-word_file  = "./meta_data/word2vec.utf8"
-train_file = "./meta_data/train_data.json"
-test_file  = "./meta_data/test_data.json"
-
-save_word_npy_folder      = "./train_text_npy/"
-test_save_word_npy_folder = "./test_text_npy/"
-save_id_npy_folder        = "./inverted_index/"
+word_file      = "./data/glove.6B.200d.txt"
+meta_folder    = "./meta_data/"
+feature_folder = "./features/"
 # ─────────────────────────────────────────────────────────────────────────────
 
-os.makedirs(save_word_npy_folder, exist_ok=True)
-os.makedirs(test_save_word_npy_folder, exist_ok=True)
-os.makedirs(save_id_npy_folder, exist_ok=True)
+VOCAB_SIZE = 50000  # GloVe is sorted by frequency; the web demo only needs the common words
 
-# ── Build word2vec lookup dictionary ────────────────────────────────────────
-begintime = time.perf_counter()
-print("---------------------Building word2vec dict---------------------------")
+os.makedirs(feature_folder, exist_ok=True)
 
-t0 = time.perf_counter()
-with open(word_file, "r", encoding="UTF-8") as fp:
-    buffer = fp.read()
-word = buffer.split("\n")
-print("Reading time: {:.3f}s".format(time.perf_counter() - t0))
 
-t0 = time.perf_counter()
-usr_dict = {}
-for i in range(len(word)):
-    try:
-        buffer = [item for item in word[i].split("\t")]
-        usr_dict[buffer[0]] = [float(item) for item in buffer[2].split(" ")]
-    except Exception:
-        print("Could not parse line:", buffer)
-print("Build time: {:.3f}s".format(time.perf_counter() - t0))
-print("Word2vec dict size:", len(usr_dict))
-print("Total time: {:.3f}s".format(time.perf_counter() - begintime))
-print("---------------------Building word2vec dict---------------------------\n")
+def tokenize(text):
+    return re.findall(r"[a-z]+", text.lower())
 
-word = []  # Free memory
 
-# ── Process training set ─────────────────────────────────────────────────────
-print("TRAIN----------------word2vec---------------------------")
-begintime = time.perf_counter()
+def embed(text, word_to_index, vectors):
+    """Average the vectors of the known words; None if no word is known."""
+    rows = [word_to_index[w] for w in tokenize(text) if w in word_to_index]
+    if not rows:
+        return None
+    return vectors[rows].mean(axis=0)
 
-t0 = time.perf_counter()
-with open(train_file, "rb") as fp:
-    buffer = fp.read()
-dictlist = []
-for item in str(buffer, encoding="UTF-8").split("\n"):
-    try:
-        dictlist.append(json.loads(item))
-    except Exception:
-        continue
-print("Reading time: {:.3f}s".format(time.perf_counter() - t0))
 
-t0 = time.perf_counter()
-new_dict = []
-for i in range(len(dictlist)):
-    try:
-        np.save(
-            os.path.join(save_word_npy_folder, str(dictlist[i]["pic_id"]) + ".npy"),
-            np.array(usr_dict[dictlist[i]["tags_term"]])
-        )
-        new_dict.append(str(dictlist[i]["pic_id"]))
-    except Exception:
-        continue
+if __name__ == "__main__":
+    # ── Build GloVe lookup ───────────────────────────────────────────────────
+    print("---------------------Building GloVe dict---------------------------")
+    t0 = time.perf_counter()
+    words, vectors = [], []
+    with open(word_file, "r", encoding="utf8") as fp:
+        for line in fp:
+            parts = line.rstrip().split(" ")
+            words.append(parts[0])
+            vectors.append(np.asarray(parts[1:], dtype=np.float32))
+    vectors = np.stack(vectors)  # (400000, 200)
+    word_to_index = {w: i for i, w in enumerate(words)}
+    print("GloVe dict size:", len(words), " build time: {:.1f}s".format(time.perf_counter() - t0))
 
-with open(os.path.join(save_id_npy_folder, "train_txt_npy_id.json"), "w", encoding="UTF-8") as fp:
-    json.dump(new_dict, fp, ensure_ascii=False)
-print("Processing time: {:.3f}s".format(time.perf_counter() - t0))
-print("Total time: {:.3f}s".format(time.perf_counter() - begintime))
-print("TRAIN----------------word2vec---------------------------\n")
+    # Save a compact vocabulary for query-time use (Flask_Web.py / search.py)
+    np.save(os.path.join(feature_folder, "glove_vectors.npy"), vectors[:VOCAB_SIZE])
+    with open(os.path.join(feature_folder, "glove_words.json"), "w", encoding="utf8") as fp:
+        json.dump(words[:VOCAB_SIZE], fp)
 
-# ── Process test set ─────────────────────────────────────────────────────────
-print("TEST-----------------word2vec---------------------------")
-begintime = time.perf_counter()
+    # ── Embed every caption ──────────────────────────────────────────────────
+    for split in ["train", "val", "test"]:
+        with open(os.path.join(feature_folder, f"img_{split}_ids.json"), encoding="utf8") as fp:
+            img_index = {pic_id: i for i, pic_id in enumerate(json.load(fp))}
+        with open(os.path.join(meta_folder, f"{split}_data.json"), encoding="utf8") as fp:
+            dictlist = [json.loads(line) for line in fp if line.strip()]
 
-t0 = time.perf_counter()
-with open(test_file, "rb") as fp:
-    buffer = fp.read()
-dictlist = []
-for item in str(buffer, encoding="UTF-8").split("\n"):
-    try:
-        dictlist.append(json.loads(item))
-    except Exception:
-        continue
-print("Reading time: {:.3f}s".format(time.perf_counter() - t0))
+        txt_features, txt_to_img, skipped = [], [], 0
+        for item in dictlist:
+            for caption in item["captions"]:
+                vec = embed(caption, word_to_index, vectors)
+                if vec is None:
+                    skipped += 1
+                    continue
+                txt_features.append(vec)
+                txt_to_img.append(img_index[item["pic_id"]])  # which image row this caption describes
 
-t0 = time.perf_counter()
-new_dict = []
-for i in range(len(dictlist)):
-    try:
-        np.save(
-            os.path.join(test_save_word_npy_folder, str(dictlist[i]["pic_id"]) + ".npy"),
-            np.array(usr_dict[dictlist[i]["tags_term"]])
-        )
-        new_dict.append(str(dictlist[i]["pic_id"]))
-    except Exception:
-        continue
+        np.save(os.path.join(feature_folder, f"txt_{split}.npy"), np.stack(txt_features))
+        np.save(os.path.join(feature_folder, f"txt_{split}_img.npy"), np.array(txt_to_img))
+        print("#{} captions: {}  (skipped {} with no known words)".format(split, len(txt_features), skipped))
 
-with open(os.path.join(save_id_npy_folder, "test_txt_npy_id.json"), "w", encoding="UTF-8") as fp:
-    json.dump(new_dict, fp, ensure_ascii=False)
-print("Processing time: {:.3f}s".format(time.perf_counter() - t0))
-print("Total time: {:.3f}s".format(time.perf_counter() - begintime))
-print("TEST-----------------word2vec---------------------------")
-print("\nPipeline complete.")
+    print("\nPipeline complete.")

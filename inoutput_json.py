@@ -1,32 +1,31 @@
-# Read input.json and build an inverted index saved as output.json
+# Read the caption metadata and build an inverted index (word -> pic_ids) saved as output.json
 import json
+import re
 import time
 
 # ── Paths (update these to match your environment) ──────────────────────────
-input_filename  = "./meta_data/input.json"
+input_filenames = ["./meta_data/train_data.json", "./meta_data/val_data.json", "./meta_data/test_data.json"]
 output_filename = "./meta_data/output.json"
 # ─────────────────────────────────────────────────────────────────────────────
 
 inverted_index = {}
 total_start = time.time()
 
-# Step 1: Load the JSON file
+# Step 1: Load the JSON files (one object per line)
 t0 = time.time()
 dictlist = []
-with open(input_filename, "r", encoding="utf8") as fp:
-    for line in fp:
-        item = json.loads(line.strip())
-        dictlist.append(item)
+for input_filename in input_filenames:
+    with open(input_filename, "r", encoding="utf8") as fp:
+        for line in fp:
+            dictlist.append(json.loads(line.strip()))
 print("Reading time: {:.3f}s".format(time.time() - t0))
 
-# Step 2: Build inverted index — key: tags_term, value: list of pic_ids
+# Step 2: Build inverted index — key: lowercase caption word, value: list of pic_ids
 t0 = time.time()
 for item in dictlist:
-    tag = item["tags_term"]
-    if tag in inverted_index:
-        inverted_index[tag].append(item["pic_id"])
-    else:
-        inverted_index[tag] = [item["pic_id"]]
+    words = set(re.findall(r"[a-z]+", " ".join(item["captions"]).lower()))
+    for word in words:
+        inverted_index.setdefault(word, []).append(item["pic_id"])
 
 print("#Index entries:", len(inverted_index))
 print("Building time: {:.3f}s".format(time.time() - t0))
